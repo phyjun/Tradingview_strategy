@@ -1,0 +1,72 @@
+//@version=4
+study("QQE MOD", overlay=false)
+
+// === QQE PRIMARY SETTINGS ===
+rsiLengthPrimary = input(6, title="RSI Length Primary")
+rsiSmoothingPrimary = input(5, title="RSI Smoothing Primary")
+qqeFactorPrimary = input(3.0, title="QQE Factor Primary")
+thresholdPrimary = input(3.0, title="Threshold Primary")
+
+// === QQE SECONDARY SETTINGS ===
+rsiLengthSecondary = input(6, title="RSI Length Secondary")
+rsiSmoothingSecondary = input(5, title="RSI Smoothing Secondary")
+qqeFactorSecondary = input(1.61, title="QQE Factor Secondary")
+thresholdSecondary = input(3.0, title="Threshold Secondary")
+
+// === BOLLINGER SETTINGS ===
+bollingerLength = input(50, title="BB Length")
+bollingerMultiplier = input(0.35, step=0.1, title="BB Multiplier")
+
+// === QQE CALCULATIONS ===
+calcQQE(rsiLength, smoothingFactor, qqeFactor, _src) =>
+    _rsi = rsi(_src, rsiLength)
+    _smoothrsi = ema(_rsi, smoothingFactor)
+    _rsiAtr = abs(_smoothrsi[1] - _smoothrsi)
+    _smoothrsiAtr = ema(_rsiAtr, rsiLength * 2 - 1)
+    _dar = _smoothrsiAtr * qqeFactor
+    
+    var float longBand = 0.0
+    var float shortBand = 0.0
+    var int trend = 0
+    
+    _newShortBand = _smoothrsi + _dar
+    _newLongBand = _smoothrsi - _dar
+    longBand := _smoothrsi[1] > longBand[1] and _smoothrsi > longBand[1] ? max(longBand[1], _newLongBand) : _newLongBand
+    shortBand := _smoothrsi[1] < shortBand[1] and _smoothrsi < shortBand[1] ? min(shortBand[1], _newShortBand) : _newShortBand
+    
+    trend := crossover(_smoothrsi, shortBand[1]) ? 1 : crossunder(_smoothrsi, longBand[1]) ? -1 : trend[1]
+    
+    [trend == 1 ? longBand : shortBand, _smoothrsi]
+
+[primaryQQETrendLine, primaryRSI] = calcQQE(rsiLengthPrimary, rsiSmoothingPrimary, qqeFactorPrimary, close)
+[secondaryQQETrendLine, secondaryRSI] = calcQQE(rsiLengthSecondary, rsiSmoothingSecondary, qqeFactorSecondary, close)
+
+// Bollinger Bands
+bbBasis = sma(primaryQQETrendLine - 50, bollingerLength)
+bbDev = bollingerMultiplier * stdev(primaryQQETrendLine - 50, bollingerLength)
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+
+// === PLOTTING ===
+// Plot QQE Lines and Signals
+plot(secondaryQQETrendLine - 50, title="Secondary QQE Trend", color=color.white, linewidth=2)
+
+// Plot RSI Histogram
+rsiColorSecondary = secondaryRSI - 50 > thresholdSecondary ? color.new(#707070, 20) : 
+   secondaryRSI - 50 < -thresholdSecondary ? color.new(#707070, 20) : na
+plot(secondaryRSI - 50, title="Secondary RSI", style=plot.style_columns, color=rsiColorSecondary)
+
+// Plot Signal Highlights
+plot(secondaryRSI - 50 > thresholdSecondary and primaryRSI - 50 > bbUpper ? secondaryRSI - 50 : na, 
+     title="QQE Up Signal", style=plot.style_columns, color=#00c3ff)
+plot(secondaryRSI - 50 < -thresholdSecondary and primaryRSI - 50 < bbLower ? secondaryRSI - 50 : na, 
+     title="QQE Down Signal", style=plot.style_columns, color=#ff0062)
+
+// Plot Zero Line
+hline(0, title="Zero Line", color=color.white, linestyle=hline.style_dotted)
+
+// === ALERTS ===
+alertcondition(crossover(primaryRSI, 50), title="QQE Primary RSI Cross Above Zero")
+alertcondition(crossunder(primaryRSI, 50), title="QQE Primary RSI Cross Below Zero")
+alertcondition(secondaryRSI - 50 > thresholdSecondary and primaryRSI - 50 > bbUpper, title="QQE Buy Signal")
+alertcondition(secondaryRSI - 50 < -thresholdSecondary and primaryRSI - 50 < bbLower, title="QQE Sell Signal")

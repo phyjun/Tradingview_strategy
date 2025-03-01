@@ -1,0 +1,169 @@
+//@version=5
+//比较垃圾的策略
+strategy('Machine Learning: kNN-based Strategy', 'ML-kNN', overlay=true, max_labels_count=300, 
+         initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// kNN-based Strategy (FX and Crypto)
+// Description: 
+// This strategy uses a classic machine learning algorithm - k Nearest Neighbours (kNN) - 
+// to predict the next market move. Being an unsupervised machine learning algorithm, 
+// kNN is one of the most simple learning algorithms. 
+
+//-- Preset Dates
+int startdate = timestamp('01 Jan 2000 00:00:00 GMT+10')
+int stopdate  = timestamp('31 Dec 2025 23:45:00 GMT+10')
+
+//-- Inputs
+StartDate  = input.time  (startdate, 'Start Date')
+StopDate   = input.time  (stopdate,  'Stop Date')
+Indicator  = input.string('All',     'Indicator',   ['RSI','ROC','CCI','Volume','All'])
+ShortWinow = input.int   (14,        'Short Period [1..n]', 1)
+LongWindow = input.int   (28,        'Long Period [2..n]',  2)
+BaseK      = input.int   (252,       'Base No. of Neighbours (K) [5..n]', 5)
+Filter     = input.bool  (false,     'Volatility Filter')
+Bars       = input.int   (300,       'Bar Threshold [2..5000]', 2, 5000)
+
+// Strategy Specific Inputs
+useStopLoss = input.bool(true, "Use Stop Loss", group="Strategy Settings")
+slPercent   = input.float(2.0, "Stop Loss %", minval=0.1, step=0.1, group="Strategy Settings")
+tpPercent   = input.float(3.0, "Take Profit %", minval=0.1, step=0.1, group="Strategy Settings")
+riskPercent = input.float(1.0, "Risk Per Trade %", minval=0.1, step=0.1, group="Strategy Settings")
+
+//-- Constants
+var int BUY   = 1
+var int SELL  =-1
+var int CLEAR = 0
+var int k     = math.floor(math.sqrt(BaseK))  // k Value for kNN algo
+
+//-- Variables
+// Training data, normalized to the range of [0,...,100]
+var array<float> feature1   = array.new_float(0)  // [0,...,100]
+var array<float> feature2   = array.new_float(0)  //    ...
+var array<int>   directions = array.new_int(0)    // [-1; +1]
+
+// Result data
+var array<int>   predictions = array.new_int(0)
+var float        prediction  = 0.0
+var array<int>   bars        = array.new<int>(1, 0) // array used as a container for inter-bar variables
+
+// Signals
+var int          signal      = CLEAR
+
+//-- Functions
+minimax(float x, int p, float min, float max) => 
+    float hi = ta.highest(x, p), float lo = ta.lowest(x, p)
+    (max - min) * (x - lo)/(hi - lo) + min
+
+cAqua(int g) => g>9?#0080FFff:g>8?#0080FFe5:g>7?#0080FFcc:g>6?#0080FFb2:g>5?#0080FF99:g>4?#0080FF7f:g>3?#0080FF66:g>2?#0080FF4c:g>1?#0080FF33:#00C0FF19
+cPink(int g) => g>9?#FF0080ff:g>8?#FF0080e5:g>7?#FF0080cc:g>6?#FF0080b2:g>5?#FF008099:g>4?#FF00807f:g>3?#FF008066:g>2?#FF00804c:g>1?#FF008033:#FF008019
+
+inside_window(float start, float stop) =>  
+    time >= start and time <= stop ? true : false
+
+//-- Logic
+bool window = inside_window(StartDate, StopDate)
+
+// 3 pairs of predictor indicators, long and short each
+float rs = ta.rsi(close,   LongWindow),        float rf = ta.rsi(close,   ShortWinow)
+float cs = ta.cci(close,   LongWindow),        float cf = ta.cci(close,   ShortWinow)
+float os = ta.roc(close,   LongWindow),        float of = ta.roc(close,   ShortWinow)
+float vs = minimax(volume, LongWindow, 0, 99), float vf = minimax(volume, ShortWinow, 0, 99)
+
+float f1 = switch Indicator
+    'RSI'    => rs 
+    'CCI'    => cs 
+    'ROC'    => os 
+    'Volume' => vs 
+    => math.avg(rs, cs, os, vs)
+
+float f2 = switch Indicator
+    'RSI'    => rf 
+    'CCI'    => cf
+    'ROC'    => of
+    'Volume' => vf 
+    => math.avg(rf, cf, of, vf)
+
+// Classification data, what happens on the next bar
+int class_label = int(math.sign(close[1] - close[0])) // eq. close[1]<close[0] ? SELL: close[1]>close[0] ? BUY : CLEAR
+
+// Use particular training period
+if window
+    array.push(feature1, f1)
+    array.push(feature2, f2)
+    array.push(directions, class_label)
+
+// Core logic of the algorithm
+int   size    = array.size(directions)
+float maxdist = -999.0
+// Loop through the training arrays, getting distances and corresponding directions.
+for i=0 to size-1
+    float d = math.sqrt(math.pow(f1 - array.get(feature1, i), 2) + math.pow(f2 - array.get(feature2, i), 2))
+    
+    if d > maxdist
+        maxdist := d
+        if array.size(predictions) >= k
+            array.shift(predictions)
+        array.push(predictions, array.get(directions, i))
+
+// Get the overall prediction of k nearest neighbours
+prediction := array.sum(predictions)   
+
+bool filter = Filter ? ta.atr(10) > ta.atr(40) : true
+
+// Trading Signals
+bool long  = prediction > 0 and filter
+bool short = prediction < 0 and filter
+bool clear = not(long and short)
+
+if array.get(bars, 0)==Bars    // stop by trade duration
+    signal := CLEAR
+    array.set(bars, 0, 0)
+else
+    array.set(bars, 0, array.get(bars, 0) + 1)
+
+signal := long ? BUY : short ? SELL : clear ? CLEAR : nz(signal[1])
+
+int  changed         = ta.change(signal)
+bool startLongTrade  = changed and signal==BUY 
+bool startShortTrade = changed and signal==SELL 
+bool clear_condition = changed and signal==CLEAR
+
+// Position Management
+float sl = 0.0
+float tp = 0.0
+
+// Entry and Exit Logic
+if (startLongTrade)
+    sl := close * (1 - slPercent/100)
+    tp := close * (1 + tpPercent/100)
+    strategy.entry("Long", strategy.long, qty=strategy.equity * riskPercent / 100 / (close - sl))
+    if useStopLoss
+        strategy.exit("Long Exit", "Long", stop=sl, limit=tp)
+
+if (startShortTrade)
+    sl := close * (1 + slPercent/100)
+    tp := close * (1 - tpPercent/100)
+    strategy.entry("Short", strategy.short, qty=strategy.equity * riskPercent / 100 / (sl - close))
+    if useStopLoss
+        strategy.exit("Short Exit", "Short", stop=sl, limit=tp)
+
+if (clear_condition)
+    strategy.close_all()
+
+//-- Visuals
+float maxpos = ta.highest(high, 10)
+float minpos = ta.lowest (low,  10)
+
+plotshape(startLongTrade  ? minpos : na, 'Buy',      shape.labelup,   location.belowbar, cAqua(int(prediction*5)),  size=size.small)
+plotshape(startShortTrade ? maxpos : na, 'Sell',     shape.labeldown, location.abovebar, cPink(int(-prediction*5)), size=size.small)
+plot(clear_condition      ? close  : na, 'ClearPos', color.yellow, 4, plot.style_cross)
+
+// Plot stops and targets
+plot(strategy.position_size > 0 ? sl : na, "Long Stop Loss", color=color.red, style=plot.style_circles)
+plot(strategy.position_size > 0 ? tp : na, "Long Take Profit", color=color.green, style=plot.style_circles)
+plot(strategy.position_size < 0 ? sl : na, "Short Stop Loss", color=color.red, style=plot.style_circles)
+plot(strategy.position_size < 0 ? tp : na, "Short Take Profit", color=color.green, style=plot.style_circles)
+
+// Strategy Alerts
+alertcondition(startLongTrade,  'Buy',  'Go long!')
+alertcondition(startShortTrade, 'Sell', 'Go short!')

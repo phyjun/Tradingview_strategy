@@ -1,0 +1,214 @@
+//@version=6
+strategy("Adaptive Trend Flow + Supertrend Strategy [QuantAlgo]", overlay=true, max_labels_count=500,
+         initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+//              ╔════════════════════════════════╗              //
+//              ║      USER-DEFINED SETTINGS     ║              //
+//              ╚════════════════════════════════╝              //
+
+// Input Groups
+var string atf_settings     = "════════ Adaptive Trend Flow Settings ════════"
+var string st_settings      = "════════ Supertrend Settings ════════"
+var string visual_settings  = "════════ Visualization Settings ════════"
+var string strategy_settings = "════════ Strategy Settings ════════"
+
+// ---- Adaptive Trend Flow Settings ----
+atf_length = input.int(10, "ATF Main Length", minval=2, group=atf_settings)
+atf_smooth_len = input.int(14, "ATF Smoothing Length", minval=2, group=atf_settings)
+atf_sensitivity = input.float(2.0, "ATF Sensitivity", step=0.1, group=atf_settings)
+
+// ---- Supertrend Settings ----
+st_periods = input.int(10, "ST ATR Period", group=st_settings)
+st_src = input(hl2, "ST Source", group=st_settings)
+st_multiplier = input.float(2.0, "ST ATR Multiplier", step=0.1, group=st_settings)
+st_changeATR = input(true, "ST Change ATR Calculation Method?", group=st_settings)
+
+// ---- Strategy Settings ----
+useStopLoss = input.bool(true, "Use Stop Loss", group=strategy_settings)
+stopLossPercent = input.float(2.0, "Stop Loss %", minval=0.1, step=0.1, group=strategy_settings)
+useTakeProfit = input.bool(true, "Use Take Profit", group=strategy_settings)
+takeProfitPercent = input.float(4.0, "Take Profit %", minval=0.1, step=0.1, group=strategy_settings)
+useTrailingStop = input.bool(true, "Use Trailing Stop", group=strategy_settings)
+trailPercent = input.float(1.0, "Trailing Stop %", minval=0.1, step=0.1, group=strategy_settings)
+
+// ---- Visualization Settings ----
+bullcolor = input.color(#00ffaa, "Bullish Color", group=visual_settings)
+bearcolor = input.color(#ff0000, "Bearish Color", group=visual_settings)
+showbars = input.bool(true, "Color Bars?", group=visual_settings)
+showbg = input.bool(true, "Background Color?", group=visual_settings)
+showsignals = input.bool(true, "Show Signals?", group=visual_settings)
+
+//              ╔════════════════════════════════╗              //
+//              ║    ADAPTIVE TREND FLOW CALC    ║              //
+//              ╚════════════════════════════════╝              //
+
+calculate_trend_levels() =>
+    typical = hlc3
+    fast_ema = ta.ema(typical, atf_length)
+    slow_ema = ta.ema(typical, atf_length * 2)
+    basis = (fast_ema + slow_ema) / 2
+    
+    vol = ta.stdev(typical, atf_length)
+    smooth_vol = ta.ema(vol, atf_smooth_len)
+    
+    upper = basis + (smooth_vol * atf_sensitivity)
+    lower = basis - (smooth_vol * atf_sensitivity)
+    
+    [basis, upper, lower]
+
+get_trend_state(upper, lower, basis) =>
+    var float prev_level = na
+    var int trend = 0
+    
+    if na(prev_level)
+        trend := close > basis ? 1 : -1
+        prev_level := trend == 1 ? lower : upper
+    
+    if trend == 1
+        if close < lower
+            trend := -1
+            prev_level := upper
+        else
+            prev_level := lower
+    else
+        if close > upper
+            trend := 1
+            prev_level := lower
+        else
+            prev_level := upper
+    
+    [trend, prev_level]
+
+[atf_basis, atf_upper, atf_lower] = calculate_trend_levels()
+[atf_trend, atf_level] = get_trend_state(atf_upper, atf_lower, atf_basis)
+
+//              ╔════════════════════════════════╗              //
+//              ║       SUPERTREND CALC          ║              //
+//              ╚════════════════════════════════╝              //
+
+// True Range calculation
+tr = math.max(math.max(high - low, math.abs(high - close[1])), math.abs(low - close[1]))
+
+// Supertrend Calculations
+st_atr2 = ta.sma(tr, st_periods)
+st_atr = st_changeATR ? ta.atr(st_periods) : st_atr2
+st_up = st_src - (st_multiplier * st_atr)
+st_up1 = nz(st_up[1], st_up)
+st_up := close[1] > st_up1 ? math.max(st_up, st_up1) : st_up
+st_dn = st_src + (st_multiplier * st_atr)
+st_dn1 = nz(st_dn[1], st_dn)
+st_dn := close[1] < st_dn1 ? math.min(st_dn, st_dn1) : st_dn
+st_trend = 1
+st_trend := nz(st_trend[1], st_trend)
+st_trend := st_trend == -1 and close > st_dn1 ? 1 : st_trend == 1 and close < st_up1 ? -1 : st_trend
+
+//              ╔════════════════════════════════╗              //
+//              ║       COMBINED SIGNALS         ║              //
+//              ╚════════════════════════════════╝              //
+
+// ATF Signals
+atf_long_signal = atf_trend == 1 and atf_trend[1] == -1
+atf_short_signal = atf_trend == -1 and atf_trend[1] == 1
+
+// Supertrend Signals
+st_long_signal = st_trend == 1 and st_trend[1] == -1
+st_short_signal = st_trend == -1 and st_trend[1] == 1
+
+// Combined Signals
+long_signal = atf_long_signal or st_long_signal
+short_signal = atf_short_signal or st_short_signal
+
+//              ╔════════════════════════════════╗              //
+//              ║       STRATEGY EXECUTION       ║              //
+//              ╚════════════════════════════════╝              //
+
+// Entry conditions
+if (long_signal)
+    strategy.entry("Long", strategy.long)
+
+// Exit conditions
+if (short_signal)
+    strategy.close("Long")
+
+// Stop Loss and Take Profit
+if (strategy.position_size > 0)
+    // Stop Loss
+    if (useStopLoss)
+        stopPrice = strategy.position_avg_price * (1 - stopLossPercent/100)
+        strategy.exit("SL", "Long", stop=stopPrice)
+    
+    // Take Profit
+    if (useTakeProfit)
+        limitPrice = strategy.position_avg_price * (1 + takeProfitPercent/100)
+        strategy.exit("TP", "Long", limit=limitPrice)
+    
+    // Trailing Stop
+    if (useTrailingStop)
+        trailPrice = high * (1 - trailPercent/100)
+        strategy.exit("Trail", "Long", trail_price=trailPrice, trail_offset=trailPrice * trailPercent/100)
+
+//              ╔════════════════════════════════╗              //
+//              ║         VISUALIZATION          ║              //
+//              ╚════════════════════════════════╝              //
+
+// Plot ATF
+plot(atf_basis, "ATF Basis", color=atf_trend == 1 ? bullcolor : bearcolor, linewidth=2)
+p_atf = plot(atf_level, "ATF Level", 
+     color=close > atf_level ? bullcolor : bearcolor,
+     linewidth=2, 
+     style=plot.style_linebr)
+
+// Plot Supertrend
+p_st_up = plot(st_trend == 1 ? st_up : na, "ST Up", color=bullcolor, style=plot.style_linebr)
+p_st_dn = plot(st_trend == 1 ? na : st_dn, "ST Down", color=bearcolor, style=plot.style_linebr)
+
+// Signal Labels
+if showsignals
+    if long_signal
+        label.new(bar_index, low, "𝑳", 
+                 color=bullcolor,
+                 textcolor=chart.bg_color,
+                 style=label.style_label_up)
+    
+    if short_signal
+        label.new(bar_index, high, "𝑺", 
+                 color=bearcolor,
+                 textcolor=chart.fg_color,
+                 style=label.style_label_down)
+
+// Background Color
+var float intensity = 0.0
+var int prev_trend = 0
+combined_trend = atf_trend == 1 and st_trend == 1 ? 1 : atf_trend == -1 and st_trend == -1 ? -1 : 0
+
+if combined_trend != prev_trend
+    intensity := 0.0
+    prev_trend := combined_trend
+
+intensity := combined_trend != 0 ? math.min(intensity + 1, 20) : intensity
+
+color grad_color = combined_trend == 1 ? 
+     color.from_gradient(intensity, 0, 20, color.new(bullcolor, 95), color.new(bullcolor, 80)) :
+     combined_trend == -1 ?
+     color.from_gradient(intensity, 0, 20, color.new(bearcolor, 95), color.new(bearcolor, 80)) :
+     na
+
+bgcolor(showbg ? grad_color : na)
+
+// Bar Coloring
+barcolor(showbars ? (combined_trend == 1 ? color.new(bullcolor, 15) : 
+         combined_trend == -1 ? color.new(bearcolor, 15) : na) : na)
+
+// Plot strategy equity
+plot(strategy.equity, title="Equity", color=color.blue, style=plot.style_stepline)
+
+//              ╔════════════════════════════════╗              //
+//              ║           CREATED BY           ║              //
+//              ╚════════════════════════════════╝              //
+
+// ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗     █████╗ ██╗      ██████╗  ██████╗ 
+//██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝    ██╔══██╗██║     ██╔════╝ ██╔═══██╗
+//██║   ██║██║   ██║███████║██╔██╗ ██║   ██║       ███████║██║     ██║  ███╗██║   ██║
+//██║▄▄ ██║██║   ██║██╔══██║██║╚██╗██║   ██║       ██╔══██║██║     ██║   ██║██║   ██║
+//╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║       ██║  ██║███████╗╚██████╔╝╚██████╔╝
+// ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ╚═╝  ╚═╝╚══════╝ ╚═════╝  ╚═════╝

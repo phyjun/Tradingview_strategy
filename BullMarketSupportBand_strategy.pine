@@ -1,0 +1,29 @@
+//@version=5
+strategy ('Demo GPT - Bull Market Support Band', overlay=true, commission_type=strategy.commission.percent, commission_value=0.01)
+
+source = close
+smaLength = 20
+emaLength = 21
+sma = ta. sma(source, smaLength)
+ema = ta.ema(source, emaLength)
+
+timeframe = 'W'
+
+outSma = request.security(syminfo.tickerid, timeframe, sma, gaps=barmerge.gaps_off)
+outEma = request. security(syminfo.tickerid, timeframe, ema, gaps=barmerge.gaps_off)
+
+smaPlot = plot(outSma, color=color.new(color.red, 0), title='20w SMA')
+emaPlot = plot(outEma, color=color.new(color.green, 0), title='21w EMA')
+
+fill(smaPlot, emaPlot, color=color.new(color.orange, 75), fillgaps=true)
+startDate = input.time(timestamp("2018-01-01"), "Start Date")
+endDate = input.time(timestamp("2069-12-31"), "End Date")
+
+inDateRange = time > startDate and time < endDate
+longCondition = inDateRange and ta.crossover(outEma, outSma)
+exitCondition = inDateRange and ta.crossunder(outEma, outSma)
+
+if (longCondition)
+    strategy.entry("Long", strategy. long)
+if (exitCondition)
+    strategy.close("Long" )

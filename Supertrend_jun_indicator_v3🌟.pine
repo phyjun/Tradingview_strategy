@@ -1,0 +1,150 @@
+//@version=4
+study("Supertrend Jun", overlay = true, format=format.price, precision=2)
+
+// Input parameters
+Periods = input(title="ATR Period", type=input.integer, defval=10)
+src = input(hl2, title="Source")
+Multiplier = input(title="ATR Multiplier", type=input.float, step=0.1, defval=2.0)
+changeATR = input(title="Change ATR Calculation Method ?", type=input.bool, defval=true)
+showsignals = input(title="Show Buy/Sell Signals ?", type=input.bool, defval=true)
+highlighting = input(title="Highlighter On/Off ?", type=input.bool, defval=true)
+
+// Timeframe Inputs
+t1 = input(title="Time frame 1", type=input.resolution, defval="5")
+t2 = input(title="Time frame 2", type=input.resolution, defval="15")
+t3 = input(title="Time frame 3", type=input.resolution, defval="60")
+t4 = input(title="Time frame 4", type=input.resolution, defval="240")
+t5 = input(title="Time frame 5", type=input.resolution, defval="D")
+
+// Colors
+up_trend_color = color.green
+down_trend_color = color.red
+
+// Volume tracking variables
+var float up_trend_volume = na
+var float down_trend_volume = na
+
+// Supertrend Calculations
+atr2 = sma(tr, Periods)
+atr = changeATR ? atr(Periods) : atr2
+up = src-(Multiplier*atr)
+up1 = nz(up[1],up)
+up := close[1] > up1 ? max(up,up1) : up
+dn = src+(Multiplier*atr)
+dn1 = nz(dn[1], dn)
+dn := close[1] < dn1 ? min(dn, dn1) : dn
+trend = 1
+trend := nz(trend[1], trend)
+trend := trend == -1 and close > dn1 ? 1 : trend == 1 and close < up1 ? -1 : trend
+
+// Multi-timeframe Analysis
+calcTrend(timeframe) =>
+    t_atr2 = security(syminfo.tickerid, timeframe, sma(tr, Periods))
+    t_atr = changeATR ? security(syminfo.tickerid, timeframe, atr(Periods)) : t_atr2
+    t_src = security(syminfo.tickerid, timeframe, src)
+    t_close = security(syminfo.tickerid, timeframe, close)
+    
+    t_up = t_src - (Multiplier * t_atr)
+    t_up1 = nz(t_up[1], t_up)
+    t_up := t_close[1] > t_up1 ? max(t_up, t_up1) : t_up
+    
+    t_dn = t_src + (Multiplier * t_atr)
+    t_dn1 = nz(t_dn[1], t_dn)
+    t_dn := t_close[1] < t_dn1 ? min(t_dn, t_dn1) : t_dn
+    
+    t_trend = 1
+    t_trend := nz(t_trend[1], t_trend)
+    t_trend := t_trend == -1 and t_close > t_dn1 ? 1 : t_trend == 1 and t_close < t_up1 ? -1 : t_trend
+    t_trend
+
+s1 = calcTrend(t1)
+s2 = calcTrend(t2)
+s3 = calcTrend(t3)
+s4 = calcTrend(t4)
+s5 = calcTrend(t5)
+
+s1a = s1 == 1 ? "Bullish" : "Bearish"
+s2a = s2 == 1 ? "Bullish" : "Bearish"
+s3a = s3 == 1 ? "Bullish" : "Bearish"
+s4a = s4 == 1 ? "Bullish" : "Bearish"
+s5a = s5 == 1 ? "Bullish" : "Bearish"
+
+// Volume Delta Calculations
+bool trend_cross_up = trend == 1 and trend[1] == -1
+bool trend_cross_down = trend == -1 and trend[1] == 1
+
+// Reset volume counters on trend change
+if trend_cross_up or trend_cross_down
+    up_trend_volume := 0
+    down_trend_volume := 0
+
+// Accumulate volume during trends
+if not(trend_cross_up or trend_cross_down)
+    up_trend_volume := up_trend_volume + (close > open ? volume : 0)
+    down_trend_volume := down_trend_volume + (close < open ? volume : 0)
+
+// Calculate average and delta volume
+float avg_volume_delta = (up_trend_volume + down_trend_volume) / 2
+string delta_volume = tostring((up_trend_volume - down_trend_volume) / avg_volume_delta * 100, "#.##") + "%"
+
+// Plotting
+upPlot = plot(trend == 1 ? up : na, title="Up Trend", style=plot.style_linebr, linewidth=2, color=up_trend_color)
+buySignal = trend == 1 and trend[1] == -1
+plotshape(buySignal ? up : na, title="UpTrend Begins", location=location.absolute, style=shape.circle, size=size.tiny, color=up_trend_color, transp=0)
+plotshape(buySignal and showsignals ? up : na, title="Buy", text="Buy", location=location.absolute, style=shape.labelup, size=size.tiny, color=up_trend_color, textcolor=color.white, transp=0)
+
+dnPlot = plot(trend == 1 ? na : dn, title="Down Trend", style=plot.style_linebr, linewidth=2, color=down_trend_color)
+sellSignal = trend == -1 and trend[1] == 1
+plotshape(sellSignal ? dn : na, title="DownTrend Begins", location=location.absolute, style=shape.circle, size=size.tiny, color=down_trend_color, transp=0)
+plotshape(sellSignal and showsignals ? dn : na, title="Sell", text="Sell", location=location.absolute, style=shape.labeldown, size=size.tiny, color=down_trend_color, textcolor=color.white, transp=0)
+
+// Volume Label Display
+if barstate.islast
+    label.new(bar_index, trend == 1 ? up : dn, 
+             "Buy: " + tostring(up_trend_volume, format.volume) + 
+             "\nSell: " + tostring(down_trend_volume, format.volume) + 
+             "\nDelta Volume: " + delta_volume, 
+             color=trend == 1 ? color.new(up_trend_color, 90) : color.new(down_trend_color, 90),
+             style=trend == 1 ? label.style_label_upper_left : label.style_label_lower_left,
+             textcolor=color.white)
+
+// Multi-timeframe Signal Table
+if barstate.islast
+    var table data_table = table.new(position=position.top_right, columns=2, rows=6, bgcolor=color.black, border_width=1)
+    table.cell(data_table, 0, 0, "Time Frame", text_color=color.white)
+    table.cell(data_table, 1, 0, "Signal", text_color=color.white)
+    
+    table.cell(data_table, 0, 1, t1, text_color=color.white)
+    table.cell(data_table, 1, 1, s1a, text_color=color.white, bgcolor=s1a == "Bullish" ? color.new(up_trend_color, 70) : color.new(down_trend_color, 70))
+    
+    table.cell(data_table, 0, 2, t2, text_color=color.white)
+    table.cell(data_table, 1, 2, s2a, text_color=color.white, bgcolor=s2a == "Bullish" ? color.new(up_trend_color, 70) : color.new(down_trend_color, 70))
+    
+    table.cell(data_table, 0, 3, t3, text_color=color.white)
+    table.cell(data_table, 1, 3, s3a, text_color=color.white, bgcolor=s3a == "Bullish" ? color.new(up_trend_color, 70) : color.new(down_trend_color, 70))
+    
+    table.cell(data_table, 0, 4, t4, text_color=color.white)
+    table.cell(data_table, 1, 4, s4a, text_color=color.white, bgcolor=s4a == "Bullish" ? color.new(up_trend_color, 70) : color.new(down_trend_color, 70))
+    
+    table.cell(data_table, 0, 5, t5, text_color=color.white)
+    table.cell(data_table, 1, 5, s5a, text_color=color.white, bgcolor=s5a == "Bullish" ? color.new(up_trend_color, 70) : color.new(down_trend_color, 70))
+
+// Trend Highlighting
+mPlot = plot(ohlc4, title="", style=plot.style_circles, linewidth=0)
+longFillColor = highlighting ? (trend == 1 ? color.new(up_trend_color, 80) : color.white) : color.white
+shortFillColor = highlighting ? (trend == -1 ? color.new(down_trend_color, 80) : color.white) : color.white
+fill(mPlot, upPlot, title="UpTrend Highlighter", color=longFillColor)
+fill(mPlot, dnPlot, title="DownTrend Highlighter", color=shortFillColor)
+
+// Alerts
+alertcondition(buySignal, title="SuperTrend Buy", message="SuperTrend Buy!")
+alertcondition(sellSignal, title="SuperTrend Sell", message="SuperTrend Sell!")
+changeCond = trend != trend[1]
+alertcondition(changeCond, title="SuperTrend Direction Change", message="SuperTrend has changed direction!")
+
+// MTF Alerts
+alertcondition(cross(s1, 0), title="Time Frame 1 Trend Change")
+alertcondition(cross(s2, 0), title="Time Frame 2 Trend Change")
+alertcondition(cross(s3, 0), title="Time Frame 3 Trend Change")
+alertcondition(cross(s4, 0), title="Time Frame 4 Trend Change")
+alertcondition(cross(s5, 0), title="Time Frame 5 Trend Change")

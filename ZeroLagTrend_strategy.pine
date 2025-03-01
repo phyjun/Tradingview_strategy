@@ -1,0 +1,110 @@
+//@version=5
+strategy("Zero Lag Trend Strategy [AlgoAlpha]", shorttitle="AlgoAlpha - 0️⃣Zero Lag Strategy", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// Input Parameters
+length = input.int(70, "Length", tooltip = "The Look-Back window for the Zero-Lag EMA calculations", group = "Main Calculations")
+mult = input.float(1.2, "Band Multiplier", tooltip = "This value controls the thickness of the bands, a larger value makes the indicator less noisy", group = "Main Calculations")
+t1 = input.timeframe("5", "Time frame 1", group = "Extra Timeframes")
+t2 = input.timeframe("15", "Time frame 2", group = "Extra Timeframes")
+t3 = input.timeframe("60", "Time frame 3", group = "Extra Timeframes")
+t4 = input.timeframe("240", "Time frame 4", group = "Extra Timeframes")
+t5 = input.timeframe("1D", "Time frame 5", group = "Extra Timeframes")
+green = input.color(#00ffbb, "Bullish Color", group = "Appearance")
+red = input.color(#ff1100, "Bearish Color", group = "Appearance")
+
+// Strategy Parameters
+useStopLoss = input.bool(true, "Use Stop Loss", group="Strategy Settings")
+stopLossPercent = input.float(2.0, "Stop Loss %", minval=0.1, step=0.1, group="Strategy Settings")
+useTakeProfit = input.bool(true, "Use Take Profit", group="Strategy Settings")
+takeProfitPercent = input.float(4.0, "Take Profit %", minval=0.1, step=0.1, group="Strategy Settings")
+useTrailingStop = input.bool(true, "Use Trailing Stop", group="Strategy Settings")
+trailingStopPercent = input.float(1.5, "Trailing Stop %", minval=0.1, step=0.1, group="Strategy Settings")
+
+// Calculations
+src = close
+lag = math.floor((length - 1) / 2)
+zlema = ta.ema(src + (src - src[lag]), length)
+volatility = ta.highest(ta.atr(length), length*3) * mult
+
+var trend = 0
+
+if ta.crossover(close, zlema+volatility)
+    trend := 1
+
+if ta.crossunder(close, zlema-volatility)
+    trend := -1
+
+// Entry Signals - Using main trend changes only
+longCondition = ta.crossover(trend, 0)  // When trend changes from <= 0 to 1
+shortCondition = ta.crossunder(trend, 0) // When trend changes from >= 0 to -1
+
+// Multi-timeframe signals
+s1 = request.security(syminfo.tickerid, t1, trend)
+s2 = request.security(syminfo.tickerid, t2, trend)
+s3 = request.security(syminfo.tickerid, t3, trend)
+s4 = request.security(syminfo.tickerid, t4, trend)
+s5 = request.security(syminfo.tickerid, t5, trend)
+
+// Additional confirmation using multi-timeframe analysis
+longConfirmation = s1 >= 0 and s2 >= 0 and s3 >= 0
+shortConfirmation = s1 <= 0 and s2 <= 0 and s3 <= 0
+
+// Strategy Entry Rules
+if longCondition and longConfirmation and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long)
+    if useStopLoss
+        strategy.exit("SL/TP", "Long", stop=close * (1 - stopLossPercent/100), limit=close * (1 + takeProfitPercent/100))
+
+if shortCondition and shortConfirmation and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short)
+    if useStopLoss
+        strategy.exit("SL/TP", "Short", stop=close * (1 + stopLossPercent/100), limit=close * (1 - takeProfitPercent/100))
+
+// Trailing Stop
+if useTrailingStop and strategy.position_size != 0
+    longTrailPrice = close * (1 - trailingStopPercent/100)
+    shortTrailPrice = close * (1 + trailingStopPercent/100)
+    if strategy.position_size > 0
+        strategy.exit("Trailing Stop Long", "Long", stop=longTrailPrice)
+    else
+        strategy.exit("Trailing Stop Short", "Short", stop=shortTrailPrice)
+
+// Plotting
+zlemaColor = trend == 1 ? color.new(green, 70) : color.new(red, 70)
+m = plot(zlema, title="Zero Lag Basis", linewidth=2, color=zlemaColor)
+upper = plot(trend == -1 ? zlema+volatility : na, style = plot.style_linebr, color = color.new(red, 90), title = "Upper Deviation Band")
+lower = plot(trend == 1 ? zlema-volatility : na, style = plot.style_linebr, color = color.new(green, 90), title = "Lower Deviation Band")
+
+fill(m, upper, (open + close) / 2, zlema+volatility, color.new(red, 90), color.new(red, 70))
+fill(m, lower, (open + close) / 2, zlema-volatility, color.new(green, 90), color.new(green, 70))
+
+// Plot main trend signals
+plotshape(ta.crossover(trend, 0) ? zlema-volatility*1.5 : na, "Bullish Trade", shape.triangleup, location.absolute, green, size = size.normal)
+plotshape(ta.crossunder(trend, 0) ? zlema+volatility*1.5 : na, "Bearish Trade", shape.triangledown, location.absolute, red, size = size.normal)
+
+// Multi-timeframe table
+if barstate.islast
+    var data_table = table.new(position=position.top_right, columns=2, rows=6, bgcolor=chart.bg_color, border_width=1, border_color=chart.fg_color, frame_color=chart.fg_color, frame_width=1)
+    table.cell(data_table, text_halign=text.align_center, column=0, row=0, text="Time Frame", text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=0, text="Signal", text_color=chart.fg_color)
+
+    s1a = s1 == 1 ? "Bullish" : "Bearish"
+    s2a = s2 == 1 ? "Bullish" : "Bearish"
+    s3a = s3 == 1 ? "Bullish" : "Bearish"
+    s4a = s4 == 1 ? "Bullish" : "Bearish"
+    s5a = s5 == 1 ? "Bullish" : "Bearish"
+
+    table.cell(data_table, text_halign=text.align_center, column=0, row=1, text=t1, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=1, text=s1a, text_color=chart.fg_color, bgcolor=s1a == "Bullish" ? color.new(green, 70) : color.new(red, 70))
+
+    table.cell(data_table, text_halign=text.align_center, column=0, row=2, text=t2, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=2, text=s2a, text_color=chart.fg_color, bgcolor=s2a == "Bullish" ? color.new(green, 70) : color.new(red, 70))
+
+    table.cell(data_table, text_halign=text.align_center, column=0, row=3, text=t3, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=3, text=s3a, text_color=chart.fg_color, bgcolor=s3a == "Bullish" ? color.new(green, 70) : color.new(red, 70))
+
+    table.cell(data_table, text_halign=text.align_center, column=0, row=4, text=t4, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=4, text=s4a, text_color=chart.fg_color, bgcolor=s4a == "Bullish" ? color.new(green, 70) : color.new(red, 70))
+
+    table.cell(data_table, text_halign=text.align_center, column=0, row=5, text=t5, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=5, text=s5a, text_color=chart.fg_color, bgcolor=s5a == "Bullish" ? color.new(green, 70) : color.new(red, 70))
